@@ -1,0 +1,8 @@
+name: pyrogram_adapter
+desc: Kurigram-based Telegram Bot adapter / 基于 kurigram 的 Telegram Bot 适配器
+version: 0.1.0
+author: astrbot-community
+repo: https://github.com/astrbot/astrbot_plugin_pyrogram_adapter
+display_name: Telegram Bot Adapter (Pyrogram/Kurigram)
+support_platforms:
+  - pyrogram_bot
