@@ -4,6 +4,7 @@
 消息模型 ``AstrBotMessage``，包含文本、图片、视频、语音、贴纸、文档、
 回复链等元素。
 """
+
 from __future__ import annotations
 
 import os
@@ -192,7 +193,8 @@ class PyrogramMessageConverter:
             local_path = await self._download_media(message)
             if local_path:
                 file_name = (
-                    getattr(message.audio, "file_name", None) or f"{uuid.uuid4().hex}.mp3"
+                    getattr(message.audio, "file_name", None)
+                    or f"{uuid.uuid4().hex}.mp3"
                 )
                 abm.message.append(
                     Comp.File(file=local_path, name=file_name, url=local_path)

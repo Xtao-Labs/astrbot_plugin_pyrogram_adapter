@@ -9,6 +9,7 @@
 * 周期性向 Telegram 注册 AstrBot 中声明的指令；
 * 处理 ``/start`` 命令。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,7 @@ from .config import (
 )
 from .plugin_info import PLUGIN_NAME
 from .message_converter import PyrogramMessageConverter
-from .pyrogram_event import PyrogramPlatformEvent
+from .pyrogram_event import PyrogramPlatformEvent, PyrogramPlatformGuestEvent
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -121,14 +122,24 @@ class PyrogramPlatformAdapter(Platform):
     async def run(self) -> None:
         """启动适配器并阻塞直到 :meth:`terminate` 被调用。"""
         # 延迟导入以避免在未安装依赖时影响其它适配器加载
-        from pyrogram import Client
+        from pyrogram import Client, filters
         from pyrogram.handlers import MessageHandler
 
         self.client = self._build_client(Client)
         self._converter = PyrogramMessageConverter(self.client)
 
         # 注册消息处理器：捕获所有消息再分发
-        self.client.add_handler(MessageHandler(self._on_message))
+        self.client.add_handler(MessageHandler(self._on_message, filters.incoming))
+
+        # 注册 Guest Message 处理器（未进群被 @ / 回复时收到的消息）
+        try:
+            from pyrogram.handlers import GuestMessageHandler
+
+            self.client.add_handler(GuestMessageHandler(self._on_guest_message))
+        except ImportError:
+            logger.warning(
+                "[Pyrogram] 当前 kurigram 版本不支持 GuestMessageHandler，已跳过注册。"
+            )
 
         try:
             await self.client.start()
@@ -139,9 +150,7 @@ class PyrogramPlatformAdapter(Platform):
         me = await self.client.get_me()
         self._bot_username = me.username or ""
         self._bot_id = int(me.id)
-        logger.info(
-            f"[Pyrogram] Bot 已上线: @{self._bot_username} (id={self._bot_id})"
-        )
+        logger.info(f"[Pyrogram] Bot 已上线: @{self._bot_username} (id={self._bot_id})")
 
         if self.adapter_config.command_register:
             await self.register_commands()
@@ -258,6 +267,75 @@ class PyrogramPlatformAdapter(Platform):
         self.commit_event(event)
 
     # ------------------------------------------------------------------ #
+    # Guest message handling
+    # ------------------------------------------------------------------ #
+    async def _on_guest_message(self, client: "Client", message: "Message") -> None:
+        """kurigram GuestMessageHandler 的回调。
+
+        Guest message 仅在 Bot 未加入的群组/私聊中、被 @ 或被回复时送达，
+        因此不可能收到 media_group 类型，这里只处理单条消息。
+        """
+        try:
+            logger.debug(
+                f"[Pyrogram] 收到 guest 消息: chat={message.chat.id} "
+                f"id={message.id} query_id={getattr(message, 'guest_query_id', None)}"
+            )
+            await self._process_single_guest_message(message)
+        except Exception:
+            logger.exception("[Pyrogram] 处理 guest 消息时发生异常")
+
+    async def _process_single_guest_message(self, message: "Message") -> None:
+        """处理 guest message 并派发到 AstrBot。"""
+        guest_query_id = getattr(message, "guest_query_id", None)
+        if not guest_query_id:
+            logger.warning("[Pyrogram] guest 消息缺少 guest_query_id，跳过。")
+            return
+
+        # 由于 guest message 只投递 @机器人 / 回复机器人 的消息，
+        # 指令类消息中通常会带有 @botusername 后缀，会让 AstrBot 指令解析失败，
+        # 此处在无回复语境下移除 @bot 前缀/后缀。
+        if (
+            message.text
+            and message.text.startswith("/")
+            and not message.reply_to_message
+            and self._bot_username
+        ):
+            cleaned = re.sub(
+                rf"\s*@{re.escape(self._bot_username)}\b",
+                "",
+                message.text,
+                flags=re.IGNORECASE,
+            ).strip()
+            if cleaned != message.text:
+                logger.debug(
+                    f"[Pyrogram] guest 指令清洗: '{message.text}' -> '{cleaned}'"
+                )
+                message.text = cleaned
+
+        abm = await self._converter.convert(
+            message,
+            bot_username=self._bot_username,
+            bot_id=self._bot_id,
+        )
+        if abm is None:
+            return
+        await self._dispatch_guest(abm, guest_query_id=str(guest_query_id))
+
+    async def _dispatch_guest(
+        self, abm: AstrBotMessage, *, guest_query_id: str
+    ) -> None:
+        event = PyrogramPlatformGuestEvent(
+            message_str=abm.message_str,
+            message_obj=abm,
+            platform_meta=self.meta(),
+            session_id=abm.session_id,
+            client=self.client,
+            guest_query_id=guest_query_id,
+            streaming_throttle=self.adapter_config.streaming_throttle,
+        )
+        self.commit_event(event)
+
+    # ------------------------------------------------------------------ #
     # Media group aggregation
     # ------------------------------------------------------------------ #
     async def _handle_media_group_message(self, message: "Message") -> None:
@@ -294,9 +372,7 @@ class PyrogramPlatformAdapter(Platform):
         if not entry or not entry["items"]:
             return
         items: list["Message"] = entry["items"]
-        logger.info(
-            f"[Pyrogram] 聚合媒体组 {media_group_id}，共 {len(items)} 条消息"
-        )
+        logger.info(f"[Pyrogram] 聚合媒体组 {media_group_id}，共 {len(items)} 条消息")
 
         try:
             first = items[0]
@@ -356,17 +432,12 @@ class PyrogramPlatformAdapter(Platform):
 
         for handler_metadata in star_handlers_registry:
             module_path = handler_metadata.handler_module_path
-            if (
-                module_path not in star_map
-                or not star_map[module_path].activated
-            ):
+            if module_path not in star_map or not star_map[module_path].activated:
                 continue
             if not handler_metadata.enabled:
                 continue
             for event_filter in handler_metadata.event_filters:
-                info = self._extract_command_info(
-                    event_filter, handler_metadata, skip
-                )
+                info = self._extract_command_info(event_filter, handler_metadata, skip)
                 if not info:
                     continue
                 for name, desc in info:

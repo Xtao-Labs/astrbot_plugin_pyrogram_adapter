@@ -3,6 +3,7 @@
 仅做一件事：导入 ``pyrogram_adapter`` 子包以触发 ``@register_platform_adapter``
 装饰器把 ``PyrogramPlatformAdapter`` 注册进 AstrBot 平台注册表。
 """
+
 from __future__ import annotations
 
 from astrbot.api.star import Context, Star, register

@@ -3,6 +3,7 @@
 包含消息发送、流式输出与消息反应三大核心能力，对外向 AstrBot
 事件总线提供与官方 telegram 适配器一致的语义。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -139,9 +140,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                     **payload,
                 )
             except Exception as exc:  # noqa: BLE001 - 回退到纯文本
-                logger.warning(
-                    f"[Pyrogram] Markdown 发送失败，回退到纯文本: {exc}"
-                )
+                logger.warning(f"[Pyrogram] Markdown 发送失败，回退到纯文本: {exc}")
                 await client.send_message(
                     text=chunk,
                     parse_mode=ParseMode.DISABLED,
@@ -364,9 +363,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                             text=delta,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            f"[Pyrogram] 流式 break 编辑消息失败: {exc}"
-                        )
+                        logger.warning(f"[Pyrogram] 流式 break 编辑消息失败: {exc}")
                 message_id = None
                 delta = ""
                 current_content = ""
@@ -445,9 +442,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                     parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    f"[Pyrogram] 流式收尾 Markdown 失败，回退纯文本: {exc}"
-                )
+                logger.warning(f"[Pyrogram] 流式收尾 Markdown 失败，回退纯文本: {exc}")
                 try:
                     await self.client.edit_message_text(
                         chat_id=chat_id,
@@ -518,4 +513,185 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                 )
 
 
-__all__ = ["PyrogramPlatformEvent"]
+class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
+    """kurigram (Pyrogram) 适配器的 Guest Message 事件实现。
+
+    Guest message 的特殊性：
+    * 仅能通过 ``answer_guest_query`` 首次回复，得到 ``inline_message_id``；
+    * 之后只能用 ``edit_inline_text`` 编辑 inline message，无法发送其它消息；
+    * 无法回传除纯文本以外的任何附件。
+    """
+
+    THINKING_PLACEHOLDER = "思考中..."
+
+    def __init__(
+        self,
+        message_str: str,
+        message_obj: AstrBotMessage,
+        platform_meta: PlatformMetadata,
+        session_id: str,
+        client: "Client",
+        guest_query_id: str,
+        streaming_throttle: float = 5.0,
+    ) -> None:
+        super().__init__(
+            message_str,
+            message_obj,
+            platform_meta,
+            session_id,
+            client,
+            streaming_throttle=streaming_throttle,
+        )
+        self.guest_query_id = guest_query_id
+        self.inline_message_id: str | None = None
+
+    @classmethod
+    def _truncate_for_guest(cls, text: str) -> str:
+        """Guest 消息无法分片发送，超过 4096 直接截断并以省略号收尾。"""
+        if len(text) <= cls.MAX_MESSAGE_LENGTH:
+            return text
+        ellipsis = "..."
+        return text[: cls.MAX_MESSAGE_LENGTH - len(ellipsis)] + ellipsis
+
+    def _extract_plain_text(self, message: MessageChain) -> str:
+        """从 MessageChain 中只取纯文本，其它附件忽略并打日志。"""
+        parts: list[str] = []
+        for seg in message.chain:
+            if isinstance(seg, Plain):
+                parts.append(seg.text)
+            elif isinstance(seg, (Reply, At)):
+                continue
+            else:
+                logger.warning(
+                    f"[Pyrogram] Guest message 不支持组件 {type(seg).__name__}，已忽略"
+                )
+        return "".join(parts)
+
+    async def _answer_guest_text(self, text: str) -> str | None:
+        """使用 ``answer_guest_query`` 首次回复 guest message。"""
+        from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+
+        safe_text = self._truncate_for_guest(text) or self.THINKING_PLACEHOLDER
+        try:
+            sent = await self.client.answer_guest_query(
+                self.guest_query_id,
+                result=InlineQueryResultArticle(
+                    title=safe_text[:64] or self.THINKING_PLACEHOLDER,
+                    input_message_content=InputTextMessageContent(
+                        message_text=safe_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                    ),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[Pyrogram] answer_guest_query 失败: {exc}")
+            return None
+        inline_id = getattr(sent, "inline_message_id", None)
+        self.inline_message_id = inline_id
+        return inline_id
+
+    async def _edit_inline_text(self, text: str) -> None:
+        """编辑此前 answer_guest_query 创建的 inline message。"""
+        if not self.inline_message_id:
+            return
+        safe_text = self._truncate_for_guest(text)
+        try:
+            await self.client.edit_inline_text(
+                inline_message_id=self.inline_message_id,
+                text=safe_text,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"[Pyrogram] Markdown 编辑 inline 消息失败，回退纯文本: {exc}"
+            )
+            try:
+                await self.client.edit_inline_text(
+                    inline_message_id=self.inline_message_id,
+                    text=safe_text,
+                    parse_mode=ParseMode.DISABLED,
+                )
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning(f"[Pyrogram] 编辑 inline 消息失败: {exc2}")
+
+    async def send(self, message: MessageChain) -> None:
+        """Guest message 的非流式响应：直接 answer_guest_query 或 edit_inline_text。"""
+        text = self._extract_plain_text(message)
+        if not text:
+            return
+        if self.inline_message_id is None:
+            await self._answer_guest_text(text)
+        else:
+            await self._edit_inline_text(text)
+        # 跳过 PyrogramPlatformEvent.send（会触发 send_with_client 二次发送），
+        # 直接走 AstrMessageEvent 基类的收尾：上报 Metric + 置 _has_send_oper=True，
+        # 后者是管道用来判断是否继续进入 LLM 阶段的关键标志。
+        await AstrMessageEvent.send(self, message)
+
+    async def react(self, emoji: str | None, big: bool = False) -> None:
+        """Guest message 无法添加反应，安静地忽略。"""
+        logger.debug("[Pyrogram] Guest message 不支持反应，已忽略 react 调用")
+
+    async def send_streaming(self, generator, use_fallback: bool = False) -> None:
+        """Guest message 的流式响应。
+
+        流程：
+        1. 立即用 ``answer_guest_query`` 回复一个占位 "思考中" 消息，并保存
+           ``inline_message_id``；
+        2. 周期性通过 ``edit_inline_text`` 用累积文本更新内容；
+        3. 收尾时再做一次 Markdown 渲染。
+        """
+        # 先创建占位消息
+        if self.inline_message_id is None:
+            await self._answer_guest_text(self.THINKING_PLACEHOLDER)
+
+        delta = ""
+        current_content = ""
+        last_edit_time = 0.0
+
+        def _append_text(text: str) -> None:
+            nonlocal delta
+            delta += text
+
+        async for chain in generator:
+            if not isinstance(chain, MessageChain):
+                continue
+
+            if chain.type == "break":
+                # Guest message 只有一条 inline message，break 不再新建
+                if delta:
+                    await self._edit_inline_text(delta)
+                    current_content = delta
+                continue
+
+            for seg in chain.chain:
+                if isinstance(seg, Plain):
+                    _append_text(seg.text)
+                elif isinstance(seg, (Reply, At)):
+                    continue
+                else:
+                    logger.debug(
+                        f"[Pyrogram] Guest streaming 中忽略不支持的组件: {type(seg).__name__}"
+                    )
+
+            if not delta or self.inline_message_id is None:
+                continue
+
+            now = asyncio.get_running_loop().time()
+            if now - last_edit_time < self.streaming_throttle:
+                continue
+            if delta == current_content:
+                continue
+            await self._edit_inline_text(delta)
+            current_content = delta
+            last_edit_time = asyncio.get_running_loop().time()
+
+        # 流式结束：最终编辑一次
+        if self.inline_message_id is not None and delta and delta != current_content:
+            await self._edit_inline_text(delta)
+
+        # 走基类收尾：上报 Metric + 置 _has_send_oper=True
+        await AstrMessageEvent.send_streaming(self, generator, use_fallback)
+
+
+__all__ = ["PyrogramPlatformEvent", "PyrogramPlatformGuestEvent"]

@@ -2,6 +2,7 @@
 
 定义默认配置模板、WebUI 元数据，以及配置解析和校验逻辑。
 """
+
 from __future__ import annotations
 
 from typing import Any
