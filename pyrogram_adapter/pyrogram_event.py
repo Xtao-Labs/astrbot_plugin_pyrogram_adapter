@@ -10,8 +10,6 @@ import os
 import re
 from typing import TYPE_CHECKING, Any, Iterable
 
-import telegramify_markdown
-
 from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import (
@@ -25,7 +23,7 @@ from astrbot.api.message_components import (
 )
 from astrbot.api.platform import AstrBotMessage, MessageType, PlatformMetadata
 from astrbot.core.utils.metrics import Metric
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ChatAction, ParseMode
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pyrogram import Client
@@ -56,14 +54,14 @@ class PyrogramPlatformEvent(AstrMessageEvent):
         "word": re.compile(r"\s"),
     }
 
-    # kurigram 中 chat action 字符串常量（与 ChatAction enum 兼容）
-    ACTION_TYPING = "typing"
-    ACTION_UPLOAD_PHOTO = "upload_photo"
-    ACTION_UPLOAD_VIDEO = "upload_video"
-    ACTION_UPLOAD_VOICE = "record_audio"
-    ACTION_UPLOAD_DOCUMENT = "upload_document"
+    # kurigram 的 chat action 枚举常量（必须传 ChatAction enum，不能传字符串）
+    ACTION_TYPING = ChatAction.TYPING
+    ACTION_UPLOAD_PHOTO = ChatAction.UPLOAD_PHOTO
+    ACTION_UPLOAD_VIDEO = ChatAction.UPLOAD_VIDEO
+    ACTION_UPLOAD_VOICE = ChatAction.RECORD_AUDIO
+    ACTION_UPLOAD_DOCUMENT = ChatAction.UPLOAD_DOCUMENT
 
-    ACTION_BY_TYPE: dict[type, str] = {
+    ACTION_BY_TYPE: dict[type, ChatAction] = {
         Record: ACTION_UPLOAD_VOICE,
         Video: ACTION_UPLOAD_VIDEO,
         File: ACTION_UPLOAD_DOCUMENT,
@@ -122,7 +120,12 @@ class PyrogramPlatformEvent(AstrMessageEvent):
         reply_to_message_id: int | None = None,
         message_thread_id: int | None = None,
     ) -> None:
-        """把文本按上限切分后逐段以 MarkdownV2 发送，失败回退到纯文本。"""
+        """把文本按上限切分后逐段以 Markdown 发送，失败回退到纯文本。
+
+        说明：直接使用 Pyrogram 的 ``ParseMode.MARKDOWN``（传统 Markdown 模式），
+        无需像 MarkdownV2 那样对 ``!``、``.``、``-`` 等普通字符做反斜杠转义，
+        因此原始文本如 ``Hello! How can I help you today?`` 会被原样发送。
+        """
         for chunk in cls._split_message(text):
             payload: dict[str, Any] = {"chat_id": chat_id}
             if reply_to_message_id is not None:
@@ -130,27 +133,35 @@ class PyrogramPlatformEvent(AstrMessageEvent):
             if message_thread_id is not None:
                 payload["message_thread_id"] = message_thread_id
             try:
-                md_text = telegramify_markdown.markdownify(chunk)
                 await client.send_message(
-                    text=md_text,
+                    text=chunk,
                     parse_mode=ParseMode.MARKDOWN,
                     **payload,
                 )
             except Exception as exc:  # noqa: BLE001 - 回退到纯文本
                 logger.warning(
-                    f"[Pyrogram] MarkdownV2 发送失败，回退到纯文本: {exc}"
+                    f"[Pyrogram] Markdown 发送失败，回退到纯文本: {exc}"
                 )
-                await client.send_message(text=chunk, **payload)
+                await client.send_message(
+                    text=chunk,
+                    parse_mode=ParseMode.DISABLED,
+                    **payload,
+                )
 
     @classmethod
     async def _send_chat_action(
         cls,
         client: "Client",
         chat_id: int | str,
-        action: str,
+        action: ChatAction,
         message_thread_id: int | None = None,
     ) -> None:
-        """发送 chat action（typing / upload_photo 等）。"""
+        """发送 chat action（typing / upload_photo 等）。
+
+        注意：``action`` 必须是 :class:`pyrogram.enums.ChatAction` 枚举成员；
+        kurigram 内部会调用 ``action.name`` 与 ``action.value``，传字符串会
+        触发 ``AttributeError``。
+        """
         try:
             kwargs: dict[str, Any] = {"chat_id": chat_id, "action": action}
             if message_thread_id is not None:
@@ -160,7 +171,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
             logger.debug(f"[Pyrogram] 发送 chat action 失败: {exc}")
 
     @classmethod
-    def _get_chat_action_for_chain(cls, chain: Iterable[Any]) -> str:
+    def _get_chat_action_for_chain(cls, chain: Iterable[Any]) -> ChatAction:
         """根据消息链推断最合适的 chat action。"""
         chain_list = list(chain)
         for seg_type, action in cls.ACTION_BY_TYPE.items():
@@ -424,25 +435,25 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                     logger.debug(f"[Pyrogram] 流式编辑失败: {exc}")
                 last_edit_time = asyncio.get_running_loop().time()
 
-        # 流式结束：使用 MarkdownV2 重新渲染最终内容
+        # 流式结束：使用 Markdown 重新渲染最终内容（无需转义普通字符）
         if message_id is not None and delta and delta != current_content:
             try:
-                md_text = telegramify_markdown.markdownify(delta)
                 await self.client.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=md_text,
+                    text=delta,
                     parse_mode=ParseMode.MARKDOWN,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    f"[Pyrogram] 流式收尾 MarkdownV2 失败，回退纯文本: {exc}"
+                    f"[Pyrogram] 流式收尾 Markdown 失败，回退纯文本: {exc}"
                 )
                 try:
                     await self.client.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
                         text=delta,
+                        parse_mode=ParseMode.DISABLED,
                     )
                 except Exception as exc2:  # noqa: BLE001
                     logger.warning(f"[Pyrogram] 流式收尾编辑失败: {exc2}")

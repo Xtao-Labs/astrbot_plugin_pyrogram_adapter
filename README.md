@@ -12,7 +12,7 @@
 
 - ✅ **消息接收**：文本、图片、贴纸、动画 (GIF)、视频、视频备注、语音、音频、文档
 - ✅ **媒体组聚合**：相册式多媒体消息会去抖合并为单条 `AstrBotMessage`
-- ✅ **消息发送**：文本（MarkdownV2，失败回退纯文本）、图片、GIF、文件、语音、视频
+- ✅ **消息发送**：文本（Markdown，失败回退纯文本）、图片、GIF、文件、语音、视频
 - ✅ **流式输出**：`send_streaming` 使用 `send_message` + `edit_message_text` 实现 token 级更新
 - ✅ **消息反应**：`event.react(emoji)` 调用 Telegram 的 `sendReaction`
 - ✅ **指令注册**：自动收集 AstrBot 中声明的指令并周期性同步到 Telegram BotFather
@@ -29,13 +29,12 @@
 
 ```text
 kurigram>=2.2.0
-telegramify-markdown>=0.5.0
 ```
 
 如使用 `uv`：
 
 ```bash
-uv pip install kurigram telegramify-markdown
+uv pip install kurigram
 ```
 
 ## 配置项
@@ -86,8 +85,9 @@ astrbot_plugin_pyrogram_adapter/
 4. **流式输出**：私聊与群聊统一采用 `send_message` + `edit_message_text` 方案。这与
    官方 telegram 适配器的群聊 fallback 一致，避免依赖 `sendMessageDraft` 这一 kurigram
    尚未完全暴露的私有 API。
-5. **MarkdownV2 + 回退**：所有正式文本默认尝试用 `telegramify-markdown` 渲染为
-   MarkdownV2；任何异常（未闭合语法、特殊字符）都回退到纯文本，保证消息一定能送达。
+5. **Markdown + 回退**：所有正式文本以 Pyrogram 传统 Markdown 模式（`ParseMode.MARKDOWN`）
+   发送，无需对 `!`、`.`、`-` 等普通字符做反斜杠转义；任何异常（未闭合语法、特殊字符）都
+   回退到纯文本（`ParseMode.DISABLED`），保证消息一定能送达。
 6. **临时文件**：媒体下载到 AstrBot 的临时目录（`astrbot.core.utils.astrbot_path.get_astrbot_temp_path()`），
    清理由 AstrBot 主进程负责。
 
