@@ -187,13 +187,18 @@ class PyrogramPlatformAdapter(Platform):
     def _build_client(self, client_cls: type) -> "Client":
         """构造 kurigram Client 对象。"""
         cfg = self.adapter_config
+        session_name = cfg.adapter_id or "astrbot_pyrogram_bot"
+        if cfg.test_mode:
+            session_name = f"{session_name}_test"
         kwargs: dict[str, Any] = {
-            "name": cfg.adapter_id or "astrbot_pyrogram_bot",
+            "name": session_name,
             "api_id": cfg.api_id,
             "api_hash": cfg.api_hash,
             "bot_token": cfg.bot_token,
             "in_memory": cfg.in_memory,
         }
+        if cfg.test_mode:
+            kwargs["test_mode"] = True
         workdir = Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
         if cfg.workdir and not cfg.in_memory:
             workdir = cfg.workdir

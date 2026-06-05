@@ -25,6 +25,7 @@ DEFAULT_CONFIG_TEMPLATE: dict[str, Any] = {
     "pyrogram_media_group_timeout": 2.5,
     "pyrogram_media_group_max_wait": 10.0,
     "pyrogram_streaming_throttle": 5.0,
+    "test_mode": False,
 }
 
 
@@ -84,6 +85,10 @@ PYROGRAM_CONFIG_METADATA: dict[str, dict[str, Any]] = {
     "pyrogram_streaming_throttle": {
         "type": "float",
         "description": "群聊流式输出的最小编辑间隔（秒），避免触发 Telegram 速率限制。",
+    },
+    "test_mode": {
+        "type": "bool",
+        "description": "是否连接 Telegram 测试服务器（仅供调试用）。开启后，session 名称会自动追加 _test 后缀以区分正式环境。",
     },
 }
 
@@ -178,6 +183,7 @@ class PyrogramAdapterConfig:
         media_group_timeout: float,
         media_group_max_wait: float,
         streaming_throttle: float,
+        test_mode: bool,
     ) -> None:
         self.adapter_id = adapter_id
         self.api_id = api_id
@@ -192,6 +198,7 @@ class PyrogramAdapterConfig:
         self.media_group_timeout = media_group_timeout
         self.media_group_max_wait = media_group_max_wait
         self.streaming_throttle = streaming_throttle
+        self.test_mode = test_mode
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "PyrogramAdapterConfig":
@@ -223,6 +230,7 @@ class PyrogramAdapterConfig:
         streaming_throttle = max(
             0.0, parse_float(raw.get("pyrogram_streaming_throttle"), 5.0)
         )
+        test_mode = parse_bool(raw.get("test_mode"), False)
 
         cfg = cls(
             adapter_id=adapter_id,
@@ -238,6 +246,7 @@ class PyrogramAdapterConfig:
             media_group_timeout=media_group_timeout,
             media_group_max_wait=media_group_max_wait,
             streaming_throttle=streaming_throttle,
+            test_mode=test_mode,
         )
         cfg.validate()
         return cfg
