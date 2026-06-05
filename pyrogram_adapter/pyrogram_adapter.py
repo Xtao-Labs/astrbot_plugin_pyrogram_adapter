@@ -67,6 +67,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
     default_config_tmpl=DEFAULT_CONFIG_TEMPLATE,
     config_metadata=PYROGRAM_CONFIG_METADATA,
     adapter_display_name="Telegram Bot (Pyrogram/Kurigram)",
+    logo_path="logo.png",
     support_streaming_message=True,
 )
 class PyrogramPlatformAdapter(Platform):
