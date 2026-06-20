@@ -46,6 +46,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
 
     # Telegram 单条消息的最大文本长度
     MAX_MESSAGE_LENGTH = 4096
+    MAX_RICH_MESSAGE_LENGTH = 32768
 
     # 文本切分时的优先级模式
     SPLIT_PATTERNS = {
@@ -433,13 +434,14 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                 last_edit_time = asyncio.get_running_loop().time()
 
         # 流式结束：使用 Markdown 重新渲染最终内容（无需转义普通字符）
+        from pyrogram.types import InputRichMessage
+
         if message_id is not None and delta and delta != current_content:
             try:
                 await self.client.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=delta,
-                    parse_mode=ParseMode.MARKDOWN,
+                    rich_message=InputRichMessage(markdown=delta),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[Pyrogram] 流式收尾 Markdown 失败，回退纯文本: {exc}")
@@ -447,8 +449,7 @@ class PyrogramPlatformEvent(AstrMessageEvent):
                     await self.client.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text=delta,
-                        parse_mode=ParseMode.DISABLED,
+                        rich_message=InputRichMessage(html=delta),
                     )
                 except Exception as exc2:  # noqa: BLE001
                     logger.warning(f"[Pyrogram] 流式收尾编辑失败: {exc2}")
@@ -547,11 +548,11 @@ class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
 
     @classmethod
     def _truncate_for_guest(cls, text: str) -> str:
-        """Guest 消息无法分片发送，超过 4096 直接截断并以省略号收尾。"""
-        if len(text) <= cls.MAX_MESSAGE_LENGTH:
+        """Guest 消息无法分片发送，超过 32,768 直接截断并以省略号收尾。"""
+        if len(text) <= cls.MAX_RICH_MESSAGE_LENGTH:
             return text
         ellipsis = "..."
-        return text[: cls.MAX_MESSAGE_LENGTH - len(ellipsis)] + ellipsis
+        return text[: cls.MAX_RICH_MESSAGE_LENGTH - len(ellipsis)] + ellipsis
 
     def _extract_plain_text(self, message: MessageChain) -> str:
         """从 MessageChain 中只取纯文本，其它附件忽略并打日志。"""
@@ -569,17 +570,20 @@ class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
 
     async def _answer_guest_text(self, text: str) -> str | None:
         """使用 ``answer_guest_query`` 首次回复 guest message。"""
-        from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+        from pyrogram.types import (
+            InlineQueryResultArticle,
+            InputRichMessageContent,
+            InputRichMessage,
+        )
 
-        safe_text = self._truncate_for_guest(text) or self.THINKING_PLACEHOLDER
+        safe_text = text or self.THINKING_PLACEHOLDER
         try:
             sent = await self.client.answer_guest_query(
                 self.guest_query_id,
                 result=InlineQueryResultArticle(
                     title=safe_text[:64] or self.THINKING_PLACEHOLDER,
-                    input_message_content=InputTextMessageContent(
-                        message_text=safe_text,
-                        parse_mode=ParseMode.MARKDOWN,
+                    input_message_content=InputRichMessageContent(
+                        rich_message=InputRichMessage(markdown=text),
                     ),
                 ),
             )
@@ -592,14 +596,18 @@ class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
 
     async def _edit_inline_text(self, text: str) -> None:
         """编辑此前 answer_guest_query 创建的 inline message。"""
+        from pyrogram.types import InputRichMessage
+
         if not self.inline_message_id:
             return
-        safe_text = self._truncate_for_guest(text)
+        safe_text = self._truncate_for_guest(text).strip()
+        if not safe_text:
+            return
+        print(safe_text)
         try:
             await self.client.edit_inline_text(
                 inline_message_id=self.inline_message_id,
-                text=safe_text,
-                parse_mode=ParseMode.MARKDOWN,
+                rich_message=InputRichMessage(markdown=safe_text),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -608,8 +616,7 @@ class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
             try:
                 await self.client.edit_inline_text(
                     inline_message_id=self.inline_message_id,
-                    text=safe_text,
-                    parse_mode=ParseMode.DISABLED,
+                    rich_message=InputRichMessage(html=safe_text),
                 )
             except Exception as exc2:  # noqa: BLE001
                 logger.warning(f"[Pyrogram] 编辑 inline 消息失败: {exc2}")
