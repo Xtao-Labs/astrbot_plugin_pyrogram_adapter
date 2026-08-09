@@ -160,7 +160,7 @@ class PyrogramMessageConverter:
             local_path = await self._download_media(message)
             if local_path:
                 abm.message.append(Comp.Image(file=local_path, url=local_path))
-            self._apply_caption(abm, message, caption_text)
+            self._apply_caption(abm, message, caption_text, bot_username)
             return
 
         if message.sticker:
@@ -178,7 +178,7 @@ class PyrogramMessageConverter:
             local_path = await self._download_media(message)
             if local_path:
                 abm.message.append(Comp.Image(file=local_path, url=local_path))
-            self._apply_caption(abm, message, caption_text)
+            self._apply_caption(abm, message, caption_text, bot_username)
             return
 
         if message.voice:
@@ -199,14 +199,14 @@ class PyrogramMessageConverter:
                 abm.message.append(
                     Comp.File(file=local_path, name=file_name, url=local_path)
                 )
-            self._apply_caption(abm, message, caption_text)
+            self._apply_caption(abm, message, caption_text, bot_username)
             return
 
         if message.video or message.video_note:
             local_path = await self._download_media(message)
             if local_path:
                 abm.message.append(Comp.Video(file=local_path, path=local_path))
-            self._apply_caption(abm, message, caption_text)
+            self._apply_caption(abm, message, caption_text, bot_username)
             return
 
         if message.document:
@@ -220,7 +220,7 @@ class PyrogramMessageConverter:
                 abm.message.append(
                     Comp.File(file=local_path, name=file_name, url=local_path)
                 )
-            self._apply_caption(abm, message, caption_text)
+            self._apply_caption(abm, message, caption_text, bot_username)
             return
 
     # ------------------------------------------------------------------ #
@@ -259,13 +259,25 @@ class PyrogramMessageConverter:
         return plain_text
 
     @staticmethod
+    def _normalize_bot_mention(mention_text: str, bot_username: str) -> str:
+        """Telegram 用户名不区分大小写，命中 Bot 自身时统一为规范用户名。
+
+        AstrBot 的唤醒检查会以 ``At.qq == self_id`` 的大小写敏感方式比较，
+        若按用户输入的原样保留，``@bot_useRname`` 这类大小写不一致的提及
+        将无法唤醒 Bot。
+        """
+        if bot_username and mention_text.lower() == bot_username.lower():
+            return bot_username
+        return mention_text
+
+    @staticmethod
     def _append_mentions(
         abm: AstrBotMessage,
         message: "Message",
         plain_text: str,
         bot_username: str,
     ) -> None:
-        """根据 entities 收集 @ 提及，并在适当时移除针对本 Bot 的 @ 文本。"""
+        """根据 entities 收集 @ 提及，并把针对本 Bot 的提及统一为规范用户名。"""
         entities = getattr(message, "entities", None) or []
         for entity in entities:
             entity_type = getattr(entity, "type", None)
@@ -277,6 +289,9 @@ class PyrogramMessageConverter:
             mention_text = plain_text[offset + 1 : offset + length]
             if not mention_text:
                 continue
+            mention_text = PyrogramMessageConverter._normalize_bot_mention(
+                mention_text, bot_username
+            )
             abm.message.append(Comp.At(qq=mention_text, name=mention_text))
 
     @staticmethod
@@ -284,6 +299,7 @@ class PyrogramMessageConverter:
         abm: AstrBotMessage,
         message: "Message",
         caption_text: str,
+        bot_username: str,
     ) -> None:
         """把媒体消息的 caption 作为附加文本写入消息链。"""
         if not caption_text:
@@ -301,6 +317,9 @@ class PyrogramMessageConverter:
             length = getattr(entity, "length", 0) or 0
             mention_text = caption_text[offset + 1 : offset + length]
             if mention_text:
+                mention_text = PyrogramMessageConverter._normalize_bot_mention(
+                    mention_text, bot_username
+                )
                 abm.message.append(Comp.At(qq=mention_text, name=mention_text))
 
     async def _download_media(self, message: "Message") -> str | None:

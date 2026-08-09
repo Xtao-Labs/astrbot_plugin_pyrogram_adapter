@@ -225,6 +225,36 @@ async def test_convert_mention_entity_becomes_at_component() -> None:
 
 
 @pytest.mark.asyncio
+async def test_convert_bot_mention_normalizes_case() -> None:
+    class _EntityType(str, Enum):
+        MENTION = "MENTION"
+
+    # 用户输入的大小写与 Bot 规范用户名不一致（@MyBot -> MyBot）
+    entity = SimpleNamespace(type=_EntityType.MENTION, offset=0, length=6)
+    msg = _make_message(text="@MyBot hello", entities=[entity])
+    converter = _make_converter()
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    ats = [c for c in abm.message if isinstance(c, Comp.At)]
+    assert any(a.qq == "mybot" and a.name == "mybot" for a in ats)
+
+
+@pytest.mark.asyncio
+async def test_convert_bot_mention_keeps_other_case() -> None:
+    class _EntityType(str, Enum):
+        MENTION = "MENTION"
+
+    # 非 Bot 的提及不应被改写
+    entity = SimpleNamespace(type=_EntityType.MENTION, offset=0, length=6)  # "@Alice"
+    msg = _make_message(text="@Alice hi", entities=[entity])
+    converter = _make_converter()
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    ats = [c for c in abm.message if isinstance(c, Comp.At)]
+    assert any(a.qq == "Alice" for a in ats)
+
+
+@pytest.mark.asyncio
 async def test_convert_returns_none_when_no_from_user() -> None:
     msg = _make_message(text="x", from_user=None)
     converter = _make_converter()
