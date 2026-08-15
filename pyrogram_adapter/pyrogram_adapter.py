@@ -127,7 +127,10 @@ class PyrogramPlatformAdapter(Platform):
         from pyrogram.handlers import MessageHandler
 
         self.client = self._build_client(Client)
-        self._converter = PyrogramMessageConverter(self.client)
+        self._converter = PyrogramMessageConverter(
+            self.client,
+            max_download_size_bytes=self.adapter_config.max_download_size_bytes,
+        )
 
         # 注册消息处理器：捕获所有消息再分发
         self.client.add_handler(MessageHandler(self._on_message, filters.incoming))

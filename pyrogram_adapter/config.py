@@ -25,6 +25,7 @@ DEFAULT_CONFIG_TEMPLATE: dict[str, Any] = {
     "pyrogram_media_group_timeout": 2.5,
     "pyrogram_media_group_max_wait": 10.0,
     "pyrogram_streaming_throttle": 5.0,
+    "pyrogram_max_download_size_mb": 50,
     "test_mode": False,
 }
 
@@ -85,6 +86,10 @@ PYROGRAM_CONFIG_METADATA: dict[str, dict[str, Any]] = {
     "pyrogram_streaming_throttle": {
         "type": "float",
         "description": "群聊流式输出的最小编辑间隔（秒），避免触发 Telegram 速率限制。",
+    },
+    "pyrogram_max_download_size_mb": {
+        "type": "int",
+        "description": "限制单次下载媒体的最大大小（MB）。超过此大小的媒体不会被下载，消息组件中将以原引用占位代替。设置为 0 表示不限制。",
     },
     "test_mode": {
         "type": "bool",
@@ -183,6 +188,7 @@ class PyrogramAdapterConfig:
         media_group_timeout: float,
         media_group_max_wait: float,
         streaming_throttle: float,
+        max_download_size_mb: int,
         test_mode: bool,
     ) -> None:
         self.adapter_id = adapter_id
@@ -198,7 +204,15 @@ class PyrogramAdapterConfig:
         self.media_group_timeout = media_group_timeout
         self.media_group_max_wait = media_group_max_wait
         self.streaming_throttle = streaming_throttle
+        self.max_download_size_mb = max_download_size_mb
         self.test_mode = test_mode
+
+    @property
+    def max_download_size_bytes(self) -> int:
+        """下载大小上限（字节）。``0`` 表示不限制。"""
+        if self.max_download_size_mb <= 0:
+            return 0
+        return self.max_download_size_mb * 1024 * 1024
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "PyrogramAdapterConfig":
@@ -230,6 +244,9 @@ class PyrogramAdapterConfig:
         streaming_throttle = max(
             0.0, parse_float(raw.get("pyrogram_streaming_throttle"), 5.0)
         )
+        max_download_size_mb = max(
+            0, parse_int(raw.get("pyrogram_max_download_size_mb"), 50)
+        )
         test_mode = parse_bool(raw.get("test_mode"), False)
 
         cfg = cls(
@@ -246,6 +263,7 @@ class PyrogramAdapterConfig:
             media_group_timeout=media_group_timeout,
             media_group_max_wait=media_group_max_wait,
             streaming_throttle=streaming_throttle,
+            max_download_size_mb=max_download_size_mb,
             test_mode=test_mode,
         )
         cfg.validate()

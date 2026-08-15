@@ -72,9 +72,15 @@ def _make_message(
     )
 
 
-def _make_converter(download_path: str | None = "/tmp/file.bin") -> PyrogramMessageConverter:
+def _make_converter(
+    download_path: str | None = "/tmp/file.bin",
+    max_download_size_bytes: int = 0,
+) -> PyrogramMessageConverter:
     client = SimpleNamespace(download_media=AsyncMock(return_value=download_path))
-    return PyrogramMessageConverter(client)  # type: ignore[arg-type]
+    return PyrogramMessageConverter(  # type: ignore[arg-type]
+        client,
+        max_download_size_bytes=max_download_size_bytes,
+    )
 
 
 @pytest.mark.asyncio
@@ -280,3 +286,77 @@ async def test_convert_reply_chain_included() -> None:
     replies = [c for c in abm.message if isinstance(c, Comp.Reply)]
     assert len(replies) == 1
     assert replies[0].id == "5"
+
+
+@pytest.mark.asyncio
+async def test_convert_oversized_document_is_skipped() -> None:
+    """超过下载上限的文档应被跳过：不会调用 download_media，也不会产出 File 组件。"""
+    document = SimpleNamespace(file_name="big.bin", file_size=120 * 1024 * 1024)
+    msg = _make_message(text=None, document=document)
+    converter = _make_converter(
+        download_path="/tmp/big.bin", max_download_size_bytes=50 * 1024 * 1024
+    )
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    files = [c for c in abm.message if isinstance(c, Comp.File)]
+    assert files == []
+    converter.client.download_media.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_convert_undersized_document_is_downloaded() -> None:
+    """低于下载上限的文档应正常下载并产生 File 组件。"""
+    document = SimpleNamespace(file_name="small.bin", file_size=1 * 1024 * 1024)
+    msg = _make_message(text=None, document=document)
+    converter = _make_converter(
+        download_path="/tmp/small.bin", max_download_size_bytes=50 * 1024 * 1024
+    )
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    files = [c for c in abm.message if isinstance(c, Comp.File)]
+    assert len(files) == 1
+    assert files[0].name == "small.bin"
+    assert files[0].file == "/tmp/small.bin"
+
+
+@pytest.mark.asyncio
+async def test_convert_unknown_size_with_limit_is_downloaded() -> None:
+    """无法获取文件大小时（file_size 缺失），即使设置了上限也应尝试下载（保守行为）。"""
+    document = SimpleNamespace(file_name="nosize.bin")
+    msg = _make_message(text=None, document=document)
+    converter = _make_converter(
+        download_path="/tmp/nosize.bin", max_download_size_bytes=50 * 1024 * 1024
+    )
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    files = [c for c in abm.message if isinstance(c, Comp.File)]
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_convert_oversized_video_is_skipped() -> None:
+    """视频也受下载上限约束。"""
+    video = SimpleNamespace(file_size=80 * 1024 * 1024)
+    msg = _make_message(text=None, video=video)
+    converter = _make_converter(
+        download_path="/tmp/v.mp4", max_download_size_bytes=50 * 1024 * 1024
+    )
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    videos = [c for c in abm.message if isinstance(c, Comp.Video)]
+    assert videos == []
+    converter.client.download_media.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_convert_unlimited_when_zero() -> None:
+    """max_download_size_bytes=0 表示不限制，大文件也照样下载。"""
+    document = SimpleNamespace(file_name="huge.bin", file_size=10 * 1024 * 1024 * 1024)
+    msg = _make_message(text=None, document=document)
+    converter = _make_converter(
+        download_path="/tmp/huge.bin", max_download_size_bytes=0
+    )
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    files = [c for c in abm.message if isinstance(c, Comp.File)]
+    assert len(files) == 1

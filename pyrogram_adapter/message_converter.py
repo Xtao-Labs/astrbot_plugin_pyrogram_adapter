@@ -33,8 +33,21 @@ class PyrogramMessageConverter:
     消息组件（与官方 telegram 适配器保持一致）。
     """
 
-    def __init__(self, client: "Client") -> None:
+    def __init__(
+        self,
+        client: "Client",
+        *,
+        max_download_size_bytes: int = 0,
+    ) -> None:
+        """构造消息转换器。
+
+        Args:
+            client: kurigram Client 实例。
+            max_download_size_bytes: 单次下载允许的最大字节数；``0`` 表示不限制。
+                超过此大小的媒体不会下载，对应消息组件将被替换为占位 ``Plain``。
+        """
         self.client = client
+        self.max_download_size_bytes = max(0, int(max_download_size_bytes))
 
     async def convert(
         self,
@@ -325,8 +338,22 @@ class PyrogramMessageConverter:
     async def _download_media(self, message: "Message") -> str | None:
         """下载消息中的媒体到 AstrBot 临时目录，返回本地路径。
 
-        失败时返回 ``None``。这层封装便于在测试中通过 mock 替换。
+        当设置了下载大小上限且媒体预估大小超过限制时，会跳过下载并返回 ``None``，
+        同时记录一条警告日志。失败时同样返回 ``None``。
+        这层封装便于在测试中通过 mock 替换。
         """
+        media_size = self._extract_media_size(message)
+        if (
+            self.max_download_size_bytes > 0
+            and media_size is not None
+            and media_size > self.max_download_size_bytes
+        ):
+            size_mb = media_size / (1024 * 1024)
+            limit_mb = self.max_download_size_bytes / (1024 * 1024)
+            logger.warning(
+                f"[Pyrogram] 媒体大小 {size_mb:.2f} MB 超过下载上限 {limit_mb:.0f} MB，已跳过下载。"
+            )
+            return None
         try:
             temp_dir = get_astrbot_temp_path()
             os.makedirs(temp_dir, exist_ok=True)
@@ -337,6 +364,31 @@ class PyrogramMessageConverter:
         except Exception:
             logger.exception("[Pyrogram] 下载媒体失败")
             return None
+
+    @staticmethod
+    def _extract_media_size(message: "Message") -> int | None:
+        """从 kurigram Message 中提取媒体文件的预估字节数。
+
+        依次尝试 ``document / audio / video / video_note / animation /
+        voice / sticker / photo`` 的 ``file_size`` 属性；找不到时返回 ``None``。
+        """
+        for attr in (
+            "document",
+            "audio",
+            "video",
+            "video_note",
+            "animation",
+            "voice",
+            "sticker",
+            "photo",
+        ):
+            media = getattr(message, attr, None)
+            if media is None:
+                continue
+            size = getattr(media, "file_size", None)
+            if isinstance(size, int) and size > 0:
+                return size
+        return None
 
 
 __all__ = ["PyrogramMessageConverter"]

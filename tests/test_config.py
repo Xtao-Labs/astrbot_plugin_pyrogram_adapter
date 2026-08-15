@@ -26,6 +26,7 @@ VALID_CONFIG = {
     "pyrogram_media_group_timeout": 1.5,
     "pyrogram_media_group_max_wait": 6.0,
     "pyrogram_streaming_throttle": 0.3,
+    "pyrogram_max_download_size_mb": 100,
 }
 
 
@@ -75,6 +76,8 @@ class TestPyrogramAdapterConfig:
         assert cfg.media_group_timeout == 1.5
         assert cfg.media_group_max_wait == 6.0
         assert cfg.streaming_throttle == 0.3
+        assert cfg.max_download_size_mb == 100
+        assert cfg.max_download_size_bytes == 100 * 1024 * 1024
 
     def test_missing_api_id(self) -> None:
         raw = dict(VALID_CONFIG, api_id=0)
@@ -113,6 +116,7 @@ class TestPyrogramAdapterConfig:
             "pyrogram_media_group_timeout",
             "pyrogram_media_group_max_wait",
             "pyrogram_streaming_throttle",
+            "pyrogram_max_download_size_mb",
         }
         assert expected_keys.issubset(set(DEFAULT_CONFIG_TEMPLATE.keys()))
 
@@ -121,3 +125,22 @@ class TestPyrogramAdapterConfig:
         cfg = PyrogramAdapterConfig.from_dict(raw)
         # 至少 10 秒
         assert cfg.command_register_interval == 10
+
+    def test_default_max_download_size_is_50mb(self) -> None:
+        # 未显式设置时应默认为 50 MB
+        cfg = PyrogramAdapterConfig.from_dict(VALID_CONFIG)
+        cfg2 = PyrogramAdapterConfig.from_dict({})
+        assert cfg2.max_download_size_mb == 50
+        assert cfg2.max_download_size_bytes == 50 * 1024 * 1024
+
+    def test_max_download_size_zero_means_unlimited(self) -> None:
+        raw = dict(VALID_CONFIG, pyrogram_max_download_size_mb=0)
+        cfg = PyrogramAdapterConfig.from_dict(raw)
+        assert cfg.max_download_size_mb == 0
+        assert cfg.max_download_size_bytes == 0
+
+    def test_max_download_size_negative_clamps_to_zero(self) -> None:
+        raw = dict(VALID_CONFIG, pyrogram_max_download_size_mb=-10)
+        cfg = PyrogramAdapterConfig.from_dict(raw)
+        assert cfg.max_download_size_mb == 0
+        assert cfg.max_download_size_bytes == 0
