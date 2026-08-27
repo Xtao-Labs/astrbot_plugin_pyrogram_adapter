@@ -72,6 +72,16 @@ class PyrogramMessageConverter:
             logger.warning("[Pyrogram] 收到空消息或无 chat 信息，跳过。")
             return None
 
+        # 指向其他机器人的命令（/cmd@other_bot）不应由本 Bot 响应；
+        # MTProto 下群内所有消息都会送达，这里需主动丢弃。
+        if message.text and self.is_command_for_other_bot(
+            message.text, bot_username=bot_username
+        ):
+            logger.debug(
+                f"[Pyrogram] 忽略指向其他机器人的命令: {message.text.split(' ', 1)[0]}"
+            )
+            return None
+
         abm = AstrBotMessage()
         chat = message.chat
         chat_type_name = getattr(chat.type, "name", str(chat.type)).upper()
@@ -240,6 +250,26 @@ class PyrogramMessageConverter:
     # helpers
     # ------------------------------------------------------------------ #
     @staticmethod
+    def is_command_for_other_bot(text: str, *, bot_username: str) -> bool:
+        """判断以 ``/`` 开头的文本是否为指向其他机器人的命令。
+
+        ``/cmd`` 与 ``/cmd@本Bot用户名`` 会正常处理；
+        ``/cmd@其他用户名`` 返回 ``True``（不应由本 Bot 响应）。
+        """
+        if not text or not text.startswith("/"):
+            return False
+        if not bot_username:
+            # 尚未获知自身用户名时无法判断，保守放行
+            return False
+        head = text.split(" ", 1)[0]
+        if "@" not in head:
+            return False
+        target = head.split("@", 1)[1].strip().lstrip("@").lower()
+        if not target:
+            return False
+        return target != bot_username.lower()
+
+    @staticmethod
     def _is_reply_to_bot(message: "Message", bot_id: int) -> bool:
         reply = message.reply_to_message
         if not reply or not reply.from_user:
@@ -316,6 +346,9 @@ class PyrogramMessageConverter:
     ) -> None:
         """把媒体消息的 caption 作为附加文本写入消息链。"""
         if not caption_text:
+            return
+        # 指向其他机器人的命令式 caption 不应写入并触发唤醒
+        if self.is_command_for_other_bot(caption_text, bot_username=bot_username):
             return
         abm.message_str = caption_text
         abm.message.append(Comp.Plain(caption_text))

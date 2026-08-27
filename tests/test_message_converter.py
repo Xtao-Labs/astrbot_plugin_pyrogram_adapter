@@ -360,3 +360,66 @@ async def test_convert_unlimited_when_zero() -> None:
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert len(files) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 指向其他机器人的命令过滤
+# --------------------------------------------------------------------------- #
+
+
+def test_is_command_for_other_bot() -> None:
+    f = PyrogramMessageConverter.is_command_for_other_bot
+    # 指向其他机器人
+    assert f("/start@other_bot", bot_username="mybot") is True
+    assert f("/start@OTHER_bot arg", bot_username="mybot") is True
+    assert f("/start@other_bot a b c", bot_username="mybot") is True
+    # 指向本 Bot 或无后缀：正常处理（大小写不敏感）
+    assert f("/start", bot_username="mybot") is False
+    assert f("/start@mybot", bot_username="mybot") is False
+    assert f("/start@MYBOT hello", bot_username="mybot") is False
+    # 非命令文本
+    assert f("hello /cmd@other", bot_username="mybot") is False
+    assert f("", bot_username="mybot") is False
+    # 无自身用户名时保守放行
+    assert f("/start@other", bot_username="") is False
+
+
+@pytest.mark.asyncio
+async def test_convert_ignores_command_for_other_bot() -> None:
+    """/cmd@其他Bot 不应被转换为 AstrBotMessage。"""
+    msg = _make_message(
+        text="/start@other_bot",
+        chat=_make_chat(-100123, _ChatType.SUPERGROUP),
+    )
+    converter = _make_converter()
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is None
+
+
+@pytest.mark.asyncio
+async def test_convert_allows_command_for_self_and_bare() -> None:
+    """/cmd@本Bot 与 /cmd 均应正常通过。"""
+    converter = _make_converter()
+    for text, expected in (
+        ("/echo@mybot hi", "/echo hi"),
+        ("/echo", "/echo"),
+    ):
+        msg = _make_message(
+            text=text,
+            chat=_make_chat(-100123, _ChatType.SUPERGROUP),
+        )
+        abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+        assert abm is not None
+        assert abm.message_str == expected
+
+
+@pytest.mark.asyncio
+async def test_convert_caption_command_for_other_bot_is_skipped() -> None:
+    """指向其他机器人的命令式 caption 不应写入消息链。"""
+    photo = SimpleNamespace(file_size=100)
+    msg = _make_message(text=None, photo=photo, caption="/help@other_bot")
+    converter = _make_converter()
+    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    assert abm is not None
+    assert abm.message_str == ""
+    assert all(not isinstance(c, Comp.Plain) for c in abm.message)

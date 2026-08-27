@@ -249,6 +249,17 @@ class PyrogramPlatformAdapter(Platform):
             await self._handle_start(message)
             return
 
+        # 指向其他机器人的命令（/cmd@other_bot）不应由本 Bot 响应，
+        # MTProto 下群内所有消息都会送达，这里需主动丢弃。
+        if message.text and PyrogramMessageConverter.is_command_for_other_bot(
+            message.text, bot_username=self._bot_username
+        ):
+            logger.debug(
+                f"[Pyrogram] 忽略指向其他机器人的命令: "
+                f"{message.text.strip().split(' ', 1)[0]}"
+            )
+            return
+
         abm = await self._converter.convert(
             message,
             bot_username=self._bot_username,
@@ -298,6 +309,16 @@ class PyrogramPlatformAdapter(Platform):
         guest_query_id = getattr(message, "guest_query_id", None)
         if not guest_query_id:
             logger.warning("[Pyrogram] guest 消息缺少 guest_query_id，跳过。")
+            return
+
+        # 指向其他机器人的命令（/cmd@other_bot）不应由本 Bot 响应。
+        if message.text and PyrogramMessageConverter.is_command_for_other_bot(
+            message.text, bot_username=self._bot_username
+        ):
+            logger.debug(
+                f"[Pyrogram] 忽略指向其他机器人的 guest 命令: "
+                f"{message.text.strip().split(' ', 1)[0]}"
+            )
             return
 
         # 由于 guest message 只投递 @机器人 / 回复机器人 的消息，
