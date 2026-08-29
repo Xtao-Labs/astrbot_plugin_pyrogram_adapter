@@ -348,7 +348,7 @@ class PyrogramMessageConverter:
         if not caption_text:
             return
         # 指向其他机器人的命令式 caption 不应写入并触发唤醒
-        if self.is_command_for_other_bot(caption_text, bot_username=bot_username):
+        if PyrogramMessageConverter.is_command_for_other_bot(caption_text, bot_username=bot_username):
             return
         abm.message_str = caption_text
         abm.message.append(Comp.Plain(caption_text))

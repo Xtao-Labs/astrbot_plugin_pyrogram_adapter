@@ -551,10 +551,11 @@ class PyrogramPlatformGuestEvent(PyrogramPlatformEvent):
         """Guest 消息无法分片发送，超过 32,768 直接截断并以省略号收尾。"""
         if len(text) <= cls.MAX_RICH_MESSAGE_LENGTH:
             return text
-        ellipsis = "..."
-        return text[: cls.MAX_RICH_MESSAGE_LENGTH - len(ellipsis)] + ellipsis
+        ellipsis_ = "..."
+        return text[: cls.MAX_RICH_MESSAGE_LENGTH - len(ellipsis_)] + ellipsis_
 
-    def _extract_plain_text(self, message: MessageChain) -> str:
+    @staticmethod
+    def _extract_plain_text(message: MessageChain) -> str:
         """从 MessageChain 中只取纯文本，其它附件忽略并打日志。"""
         parts: list[str] = []
         for seg in message.chain:
