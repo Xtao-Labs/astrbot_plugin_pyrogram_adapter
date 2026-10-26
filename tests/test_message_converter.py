@@ -10,7 +10,10 @@ import pytest
 
 import astrbot.api.message_components as Comp
 from astrbot.api.platform import MessageType
-from pyrogram_adapter.message_converter import PyrogramMessageConverter
+from pyrogram_adapter.message_converter import (
+    PyrogramMessageConverter,
+    collect_bot_usernames,
+)
 
 
 class _ChatType(str, Enum):
@@ -20,18 +23,26 @@ class _ChatType(str, Enum):
 
 
 def _make_user(user_id: int, username: str = "alice") -> SimpleNamespace:
-    return SimpleNamespace(id=user_id, username=username, first_name=username)
+    return SimpleNamespace(
+        id=user_id,
+        username=username,
+        first_name=username,
+        full_name=username,
+    )
 
 
 def _make_chat(chat_id: int, chat_type: _ChatType = _ChatType.PRIVATE) -> SimpleNamespace:
-    return SimpleNamespace(id=chat_id, type=chat_type)
+    return SimpleNamespace(id=chat_id, type=chat_type, title="chat")
+
+
+_UNSET = object()
 
 
 def _make_message(
     *,
     message_id: int = 100,
-    chat: SimpleNamespace | None = None,
-    from_user: SimpleNamespace | None = None,
+    chat: object = _UNSET,
+    from_user: object = _UNSET,
     text: str | None = None,
     photo: object | None = None,
     voice: object | None = None,
@@ -49,10 +60,12 @@ def _make_message(
     is_topic_message: bool = False,
     message_thread_id: int | None = None,
 ) -> SimpleNamespace:
+    user = from_user if from_user is not _UNSET else _make_user(42)
     return SimpleNamespace(
         id=message_id,
-        chat=chat or _make_chat(1, _ChatType.PRIVATE),
-        from_user=from_user or _make_user(42),
+        chat=chat if chat is not _UNSET else _make_chat(1, _ChatType.PRIVATE),
+        from_user=user,
+        sender=user,
         text=text,
         photo=photo,
         voice=voice,
@@ -87,10 +100,11 @@ def _make_converter(
 async def test_convert_text_private_message() -> None:
     msg = _make_message(text="hello world", chat=_make_chat(1, _ChatType.PRIVATE))
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     assert abm.type == MessageType.FRIEND_MESSAGE
-    assert abm.session_id == "1"
+    # 私聊会话以发送者 ID 作为 session_id
+    assert abm.session_id == "42"
     assert abm.sender.user_id == "42"
     assert abm.message_str == "hello world"
     assert len(abm.message) == 1
@@ -105,7 +119,7 @@ async def test_convert_text_group_message() -> None:
         chat=_make_chat(-100123, _ChatType.SUPERGROUP),
     )
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     assert abm.type == MessageType.GROUP_MESSAGE
     assert abm.group_id == "-100123"
@@ -121,7 +135,7 @@ async def test_convert_topic_group_message() -> None:
         message_thread_id=77,
     )
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     assert abm.group_id == "-100123#77"
     assert abm.session_id == "-100123#77"
@@ -134,7 +148,7 @@ async def test_convert_strips_bot_username_suffix() -> None:
         chat=_make_chat(1, _ChatType.PRIVATE),
     )
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     # /echo@mybot 应被规范化为 /echo
     assert abm.message_str == "/echo hello"
@@ -156,10 +170,11 @@ async def test_convert_reply_to_bot_in_group_prepends_mention() -> None:
         reply_to_message=reply,
     )
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
-    # 群聊回复 Bot 时应该加上 /@bot 前缀
-    assert abm.message_str.startswith("/@mybot ")
+    # 群聊回复 Bot 时会先加上 "/@bot " 前缀以强制唤醒，随后该后缀被规范化移除，
+    # 留下 "/" 前缀，AstrBot 去掉 wake_prefix 后得到原始文本 "follow-up"。
+    assert abm.message_str == "/ follow-up"
 
 
 @pytest.mark.asyncio
@@ -167,7 +182,7 @@ async def test_convert_photo_downloads_media() -> None:
     photo = SimpleNamespace()
     msg = _make_message(text=None, photo=photo, caption="nice pic")
     converter = _make_converter(download_path="/tmp/photo.jpg")
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     images = [c for c in abm.message if isinstance(c, Comp.Image)]
     assert len(images) == 1
@@ -183,7 +198,7 @@ async def test_convert_voice_creates_record() -> None:
     voice = SimpleNamespace()
     msg = _make_message(text=None, voice=voice)
     converter = _make_converter(download_path="/tmp/voice.ogg")
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     records = [c for c in abm.message if isinstance(c, Comp.Record)]
     assert len(records) == 1
@@ -195,12 +210,14 @@ async def test_convert_document_creates_file_component() -> None:
     document = SimpleNamespace(file_name="readme.txt")
     msg = _make_message(text=None, document=document)
     converter = _make_converter(download_path="/tmp/readme.txt")
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert len(files) == 1
     assert files[0].name == "readme.txt"
-    assert files[0].file == "/tmp/readme.txt"
+    # File.file 会在路径不存在时尝试下载并返回空串，因此断言原始路径 file_
+    assert files[0].file_ == "/tmp/readme.txt"
+    assert files[0].url == "/tmp/readme.txt"
 
 
 @pytest.mark.asyncio
@@ -208,7 +225,7 @@ async def test_convert_sticker_with_emoji() -> None:
     sticker = SimpleNamespace(emoji="😀")
     msg = _make_message(text=None, sticker=sticker)
     converter = _make_converter(download_path="/tmp/sticker.webp")
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     images = [c for c in abm.message if isinstance(c, Comp.Image)]
     plains = [c for c in abm.message if isinstance(c, Comp.Plain)]
@@ -221,10 +238,11 @@ async def test_convert_mention_entity_becomes_at_component() -> None:
     class _EntityType(str, Enum):
         MENTION = "MENTION"
 
-    entity = SimpleNamespace(type=_EntityType.MENTION, offset=5, length=4)  # "@bob"
+    # Telegram 的 mention entity 的 offset 指向 "@"，length 包含 "@"
+    entity = SimpleNamespace(type=_EntityType.MENTION, offset=4, length=4)  # "@bob"
     msg = _make_message(text="hey @bob there", entities=[entity])
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     ats = [c for c in abm.message if isinstance(c, Comp.At)]
     assert any(getattr(a, "name", None) == "bob" for a in ats)
@@ -239,7 +257,7 @@ async def test_convert_bot_mention_normalizes_case() -> None:
     entity = SimpleNamespace(type=_EntityType.MENTION, offset=0, length=6)
     msg = _make_message(text="@MyBot hello", entities=[entity])
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     ats = [c for c in abm.message if isinstance(c, Comp.At)]
     assert any(a.qq == "mybot" and a.name == "mybot" for a in ats)
@@ -254,7 +272,7 @@ async def test_convert_bot_mention_keeps_other_case() -> None:
     entity = SimpleNamespace(type=_EntityType.MENTION, offset=0, length=6)  # "@Alice"
     msg = _make_message(text="@Alice hi", entities=[entity])
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     ats = [c for c in abm.message if isinstance(c, Comp.At)]
     assert any(a.qq == "Alice" for a in ats)
@@ -264,7 +282,7 @@ async def test_convert_bot_mention_keeps_other_case() -> None:
 async def test_convert_returns_none_when_no_from_user() -> None:
     msg = _make_message(text="x", from_user=None)
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is None
 
 
@@ -272,7 +290,7 @@ async def test_convert_returns_none_when_no_from_user() -> None:
 async def test_convert_returns_none_when_no_chat() -> None:
     msg = _make_message(text="x", chat=None)
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is None
 
 
@@ -281,7 +299,7 @@ async def test_convert_reply_chain_included() -> None:
     reply = _make_message(message_id=5, text="previous")
     msg = _make_message(message_id=6, text="now", reply_to_message=reply)
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     replies = [c for c in abm.message if isinstance(c, Comp.Reply)]
     assert len(replies) == 1
@@ -296,7 +314,7 @@ async def test_convert_oversized_document_is_skipped() -> None:
     converter = _make_converter(
         download_path="/tmp/big.bin", max_download_size_bytes=50 * 1024 * 1024
     )
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert files == []
@@ -311,12 +329,12 @@ async def test_convert_undersized_document_is_downloaded() -> None:
     converter = _make_converter(
         download_path="/tmp/small.bin", max_download_size_bytes=50 * 1024 * 1024
     )
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert len(files) == 1
     assert files[0].name == "small.bin"
-    assert files[0].file == "/tmp/small.bin"
+    assert files[0].file_ == "/tmp/small.bin"
 
 
 @pytest.mark.asyncio
@@ -327,7 +345,7 @@ async def test_convert_unknown_size_with_limit_is_downloaded() -> None:
     converter = _make_converter(
         download_path="/tmp/nosize.bin", max_download_size_bytes=50 * 1024 * 1024
     )
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert len(files) == 1
@@ -341,7 +359,7 @@ async def test_convert_oversized_video_is_skipped() -> None:
     converter = _make_converter(
         download_path="/tmp/v.mp4", max_download_size_bytes=50 * 1024 * 1024
     )
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     videos = [c for c in abm.message if isinstance(c, Comp.Video)]
     assert videos == []
@@ -356,7 +374,7 @@ async def test_convert_unlimited_when_zero() -> None:
     converter = _make_converter(
         download_path="/tmp/huge.bin", max_download_size_bytes=0
     )
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     files = [c for c in abm.message if isinstance(c, Comp.File)]
     assert len(files) == 1
@@ -370,18 +388,28 @@ async def test_convert_unlimited_when_zero() -> None:
 def test_is_command_for_other_bot() -> None:
     f = PyrogramMessageConverter.is_command_for_other_bot
     # 指向其他机器人
-    assert f("/start@other_bot", bot_username="mybot") is True
-    assert f("/start@OTHER_bot arg", bot_username="mybot") is True
-    assert f("/start@other_bot a b c", bot_username="mybot") is True
+    assert f("/start@other_bot", bot_usernames=("mybot",)) is True
+    assert f("/start@OTHER_bot arg", bot_usernames=("mybot",)) is True
+    assert f("/start@other_bot a b c", bot_usernames=("mybot",)) is True
     # 指向本 Bot 或无后缀：正常处理（大小写不敏感）
-    assert f("/start", bot_username="mybot") is False
-    assert f("/start@mybot", bot_username="mybot") is False
-    assert f("/start@MYBOT hello", bot_username="mybot") is False
+    assert f("/start", bot_usernames=("mybot",)) is False
+    assert f("/start@mybot", bot_usernames=("mybot",)) is False
+    assert f("/start@MYBOT hello", bot_usernames=("mybot",)) is False
     # 非命令文本
-    assert f("hello /cmd@other", bot_username="mybot") is False
-    assert f("", bot_username="mybot") is False
+    assert f("hello /cmd@other", bot_usernames=("mybot",)) is False
+    assert f("", bot_usernames=("mybot",)) is False
     # 无自身用户名时保守放行
-    assert f("/start@other", bot_username="") is False
+    assert f("/start@other", bot_usernames=()) is False
+
+
+def test_is_command_for_other_bot_with_multiple_usernames() -> None:
+    """Bot 拥有多个用户名时，指向任一用户名的命令都应视为发给本 Bot。"""
+    f = PyrogramMessageConverter.is_command_for_other_bot
+    usernames = ("mybot", "mybot_alt")
+    assert f("/start@mybot_alt", bot_usernames=usernames) is False
+    assert f("/start@MYBOT_ALT hello", bot_usernames=usernames) is False
+    assert f("/start@mybot", bot_usernames=usernames) is False
+    assert f("/start@other_bot", bot_usernames=usernames) is True
 
 
 @pytest.mark.asyncio
@@ -392,7 +420,7 @@ async def test_convert_ignores_command_for_other_bot() -> None:
         chat=_make_chat(-100123, _ChatType.SUPERGROUP),
     )
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is None
 
 
@@ -408,7 +436,7 @@ async def test_convert_allows_command_for_self_and_bare() -> None:
             text=text,
             chat=_make_chat(-100123, _ChatType.SUPERGROUP),
         )
-        abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+        abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
         assert abm is not None
         assert abm.message_str == expected
 
@@ -419,7 +447,136 @@ async def test_convert_caption_command_for_other_bot_is_skipped() -> None:
     photo = SimpleNamespace(file_size=100)
     msg = _make_message(text=None, photo=photo, caption="/help@other_bot")
     converter = _make_converter()
-    abm = await converter.convert(msg, bot_username="mybot", bot_id=99)
+    abm = await converter.convert(msg, bot_usernames=("mybot",), bot_id=99)
     assert abm is not None
     assert abm.message_str == ""
     assert all(not isinstance(c, Comp.Plain) for c in abm.message)
+
+
+# --------------------------------------------------------------------------- #
+# 多用户名（collectible usernames）支持
+# --------------------------------------------------------------------------- #
+
+
+def test_collect_bot_usernames_from_username_and_usernames() -> None:
+    """主用户名与附加用户名应合并去重，主用户名在前。"""
+    user = SimpleNamespace(
+        username="mybot",
+        usernames=[
+            SimpleNamespace(username="mybot_alt", active=True),
+            SimpleNamespace(username="mybot_collect", active=True),
+        ],
+    )
+    assert collect_bot_usernames(user) == ("mybot", "mybot_alt", "mybot_collect")
+
+
+def test_collect_bot_usernames_handles_plain_strings() -> None:
+    """usernames 元素为纯字符串时也应被识别。"""
+    user = SimpleNamespace(username="mybot", usernames=["mybot_alt"])
+    assert collect_bot_usernames(user) == ("mybot", "mybot_alt")
+
+
+def test_collect_bot_usernames_empty_list() -> None:
+    """usernames 为空列表时只保留主用户名。"""
+    user = SimpleNamespace(username="mybot", usernames=[])
+    assert collect_bot_usernames(user) == ("mybot",)
+
+
+def test_collect_bot_usernames_missing_usernames_attribute() -> None:
+    """usernames 属性缺失（None）时不应报错。"""
+    user = SimpleNamespace(username="mybot", usernames=None)
+    assert collect_bot_usernames(user) == ("mybot",)
+
+
+def test_collect_bot_usernames_skips_inactive() -> None:
+    """非活跃（inactive）的可收集用户名不应用于提及匹配。"""
+    user = SimpleNamespace(
+        username="mybot",
+        usernames=[SimpleNamespace(username="mybot_off", active=False)],
+    )
+    assert collect_bot_usernames(user) == ("mybot",)
+
+
+def test_collect_bot_usernames_deduplicates_case_insensitively() -> None:
+    """与主用户名重复的附加用户名应被去重。"""
+    user = SimpleNamespace(
+        username="mybot",
+        usernames=[SimpleNamespace(username="MyBot", active=True)],
+    )
+    assert collect_bot_usernames(user) == ("mybot",)
+
+
+def test_collect_bot_usernames_without_any_username() -> None:
+    """既无主用户名也无附加用户名时返回空元组。"""
+    user = SimpleNamespace(username=None, usernames=None)
+    assert collect_bot_usernames(user) == ()
+
+
+@pytest.mark.asyncio
+async def test_convert_strips_secondary_username_suffix() -> None:
+    """使用附加用户名调用的指令应被规范化为纯指令。"""
+    msg = _make_message(
+        text="/echo@mybot_alt hello",
+        chat=_make_chat(-100123, _ChatType.SUPERGROUP),
+    )
+    converter = _make_converter()
+    abm = await converter.convert(
+        msg, bot_usernames=("mybot", "mybot_alt"), bot_id=99
+    )
+    assert abm is not None
+    assert abm.message_str == "/echo hello"
+
+
+@pytest.mark.asyncio
+async def test_convert_secondary_username_mention_normalized_to_primary() -> None:
+    """以附加用户名 @ Bot 时，提及应规范为主用户名以匹配 self_id。"""
+    class _EntityType(str, Enum):
+        MENTION = "MENTION"
+
+    entity = SimpleNamespace(type=_EntityType.MENTION, offset=0, length=10)  # "@mybot_alt"
+    msg = _make_message(text="@mybot_alt hello", entities=[entity])
+    converter = _make_converter()
+    abm = await converter.convert(
+        msg, bot_usernames=("mybot", "mybot_alt"), bot_id=99
+    )
+    assert abm is not None
+    assert abm.self_id == "mybot"
+    ats = [c for c in abm.message if isinstance(c, Comp.At)]
+    assert any(a.qq == "mybot" and a.name == "mybot" for a in ats)
+
+
+@pytest.mark.asyncio
+async def test_convert_uses_primary_username_as_self_id() -> None:
+    """self_id 始终为主用户名，保证 AstrBot 唤醒检查可匹配。"""
+    msg = _make_message(text="hi", chat=_make_chat(1, _ChatType.PRIVATE))
+    converter = _make_converter()
+    abm = await converter.convert(
+        msg, bot_usernames=("mybot", "mybot_alt"), bot_id=99
+    )
+    assert abm is not None
+    assert abm.self_id == "mybot"
+
+
+@pytest.mark.asyncio
+async def test_convert_reply_to_bot_prepends_primary_username() -> None:
+    """群聊中回复 Bot 时应加上主用户名的 /@ 前缀。"""
+    bot_user = _make_user(99, "mybot")
+    reply = _make_message(
+        message_id=10,
+        from_user=bot_user,
+        text="prev",
+        chat=_make_chat(-100, _ChatType.SUPERGROUP),
+    )
+    msg = _make_message(
+        message_id=11,
+        text="follow-up",
+        chat=_make_chat(-100, _ChatType.SUPERGROUP),
+        reply_to_message=reply,
+    )
+    converter = _make_converter()
+    abm = await converter.convert(
+        msg, bot_usernames=("mybot", "mybot_alt"), bot_id=99
+    )
+    assert abm is not None
+    # 与单用户名场景一致："/@主用户名 " 前缀会被规范化为 "/" 触发唤醒
+    assert abm.message_str == "/ follow-up"

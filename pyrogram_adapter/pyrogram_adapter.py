@@ -44,7 +44,11 @@ from .config import (
     PyrogramAdapterConfig,
 )
 from .plugin_info import PLUGIN_NAME
-from .message_converter import PyrogramMessageConverter
+from .message_converter import (
+    PyrogramMessageConverter,
+    collect_bot_usernames,
+    primary_username,
+)
 from .pyrogram_event import PyrogramPlatformEvent, PyrogramPlatformGuestEvent
 
 if sys.version_info >= (3, 12):
@@ -88,7 +92,8 @@ class PyrogramPlatformAdapter(Platform):
         # 运行期状态
         self.client: "Client | None" = None
         self._terminating = False
-        self._bot_username = ""
+        # Bot 的全部用户名：主用户名在前，其后为可收集（collectible）用户名
+        self._bot_usernames: tuple[str, ...] = ()
         self._bot_id: int = 0
         self._last_command_hash: int | None = None
         self.media_group_cache: dict[str, dict[str, Any]] = {}
@@ -152,9 +157,14 @@ class PyrogramPlatformAdapter(Platform):
             raise
 
         me = await self.client.get_me()
-        self._bot_username = me.username or ""
+        # Bot 可能同时拥有主用户名与多个可收集用户名，全部保留以支持
+        # 用户以任一用户名 @ 本 Bot 或使用 /cmd@用户名 调用指令。
+        self._bot_usernames = collect_bot_usernames(me)
         self._bot_id = int(me.id)
-        logger.info(f"[Pyrogram] Bot 已上线: @{self._bot_username} (id={self._bot_id})")
+        logger.info(
+            f"[Pyrogram] Bot 已上线: @{primary_username(self._bot_usernames)} "
+            f"(id={self._bot_id}, 用户名={list(self._bot_usernames)})"
+        )
 
         if self.adapter_config.command_register:
             await self.register_commands()
@@ -252,7 +262,7 @@ class PyrogramPlatformAdapter(Platform):
         # 指向其他机器人的命令（/cmd@other_bot）不应由本 Bot 响应，
         # MTProto 下群内所有消息都会送达，这里需主动丢弃。
         if message.text and PyrogramMessageConverter.is_command_for_other_bot(
-            message.text, bot_username=self._bot_username
+            message.text, bot_usernames=self._bot_usernames
         ):
             logger.debug(
                 f"[Pyrogram] 忽略指向其他机器人的命令: "
@@ -262,7 +272,7 @@ class PyrogramPlatformAdapter(Platform):
 
         abm = await self._converter.convert(
             message,
-            bot_username=self._bot_username,
+            bot_usernames=self._bot_usernames,
             bot_id=self._bot_id,
         )
         if abm is None:
@@ -313,7 +323,7 @@ class PyrogramPlatformAdapter(Platform):
 
         # 指向其他机器人的命令（/cmd@other_bot）不应由本 Bot 响应。
         if message.text and PyrogramMessageConverter.is_command_for_other_bot(
-            message.text, bot_username=self._bot_username
+            message.text, bot_usernames=self._bot_usernames
         ):
             logger.debug(
                 f"[Pyrogram] 忽略指向其他机器人的 guest 命令: "
@@ -323,15 +333,18 @@ class PyrogramPlatformAdapter(Platform):
 
         # 由于 guest message 只投递 @机器人 / 回复机器人 的消息，
         # 指令类消息中通常会带有 @botusername 后缀，会让 AstrBot 指令解析失败，
-        # 此处在无回复语境下移除 @bot 前缀/后缀。
+        # 此处在无回复语境下移除 @bot 前缀/后缀（Bot 的任一用户名均适用）。
         if (
             message.text
             and message.text.startswith("/")
             and not message.reply_to_message
-            and self._bot_username
+            and self._bot_usernames
         ):
+            pattern = "|".join(
+                re.escape(name) for name in self._bot_usernames
+            )
             cleaned = re.sub(
-                rf"\s*@{re.escape(self._bot_username)}\b",
+                rf"\s*@({pattern})\b",
                 "",
                 message.text,
                 flags=re.IGNORECASE,
@@ -344,7 +357,7 @@ class PyrogramPlatformAdapter(Platform):
 
         abm = await self._converter.convert(
             message,
-            bot_username=self._bot_username,
+            bot_usernames=self._bot_usernames,
             bot_id=self._bot_id,
         )
         if abm is None:
@@ -408,7 +421,7 @@ class PyrogramPlatformAdapter(Platform):
             first = items[0]
             abm = await self._converter.convert(
                 first,
-                bot_username=self._bot_username,
+                bot_usernames=self._bot_usernames,
                 bot_id=self._bot_id,
             )
             if abm is None:
@@ -416,7 +429,7 @@ class PyrogramPlatformAdapter(Platform):
             for extra in items[1:]:
                 extra_abm = await self._converter.convert(
                     extra,
-                    bot_username=self._bot_username,
+                    bot_usernames=self._bot_usernames,
                     bot_id=self._bot_id,
                     get_reply=False,
                 )

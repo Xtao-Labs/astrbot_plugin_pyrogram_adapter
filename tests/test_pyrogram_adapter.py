@@ -160,3 +160,59 @@ def test_extract_command_info_normal() -> None:
     handler_md = SimpleNamespace(desc="echo command", enabled=True)
     result = cls._extract_command_info(filt, handler_md, set())
     assert result == [("echo", "echo command")]
+
+
+# --------------------------------------------------------------------------- #
+# 多用户名（collectible usernames）支持
+# --------------------------------------------------------------------------- #
+
+
+def test_adapter_starts_with_empty_usernames() -> None:
+    """未连接时 Bot 用户名集合为空。"""
+    cls = _import_adapter_cls()
+    adapter = cls(VALID_CONFIG, {}, asyncio.Queue())
+    assert adapter._bot_usernames == ()
+
+
+@pytest.mark.asyncio
+async def test_guest_command_suffix_removed_for_any_username() -> None:
+    """guest 指令中的 @后缀 应按 Bot 的任一用户名被清洗掉。"""
+    cls = _import_adapter_cls()
+    adapter = cls(VALID_CONFIG, {}, asyncio.Queue())
+    adapter._bot_usernames = ("mybot", "mybot_alt")
+
+    converter = MagicMock()
+    converter.convert = AsyncMock(return_value=None)
+    adapter._converter = converter
+
+    for username in ("mybot", "mybot_alt"):
+        message = SimpleNamespace(
+            id=1,
+            text=f"/echo@{username} hello",
+            reply_to_message=None,
+            guest_query_id="q1",
+        )
+        await adapter._process_single_guest_message(message)
+        # @后缀 应被移除
+        assert message.text == "/echo hello"
+
+
+@pytest.mark.asyncio
+async def test_guest_command_for_other_bot_is_ignored() -> None:
+    """指向其他 Bot 的 guest 指令不应被处理。"""
+    cls = _import_adapter_cls()
+    adapter = cls(VALID_CONFIG, {}, asyncio.Queue())
+    adapter._bot_usernames = ("mybot", "mybot_alt")
+
+    converter = MagicMock()
+    converter.convert = AsyncMock(return_value=None)
+    adapter._converter = converter
+
+    message = SimpleNamespace(
+        id=1,
+        text="/echo@other_bot hello",
+        reply_to_message=None,
+        guest_query_id="q1",
+    )
+    await adapter._process_single_guest_message(message)
+    converter.convert.assert_not_called()

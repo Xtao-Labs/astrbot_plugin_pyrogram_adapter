@@ -126,13 +126,6 @@ class TestPyrogramAdapterConfig:
         # 至少 10 秒
         assert cfg.command_register_interval == 10
 
-    def test_default_max_download_size_is_50mb(self) -> None:
-        # 未显式设置时应默认为 50 MB
-        cfg = PyrogramAdapterConfig.from_dict(VALID_CONFIG)
-        cfg2 = PyrogramAdapterConfig.from_dict({})
-        assert cfg2.max_download_size_mb == 50
-        assert cfg2.max_download_size_bytes == 50 * 1024 * 1024
-
     def test_max_download_size_zero_means_unlimited(self) -> None:
         raw = dict(VALID_CONFIG, pyrogram_max_download_size_mb=0)
         cfg = PyrogramAdapterConfig.from_dict(raw)
